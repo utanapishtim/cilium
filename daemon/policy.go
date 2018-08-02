@@ -19,7 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"sync"
+	"time"
 
 	"github.com/cilium/cilium/api/v1/models"
 	. "github.com/cilium/cilium/api/v1/server/restapi/policy"
@@ -41,18 +41,42 @@ import (
 	"github.com/op/go-logging"
 )
 
-// TriggerPolicyUpdates triggers policy updates for every daemon's endpoint.
-// This is called after policy changes, but also after some changes in daemon
-// configuration and endpoint labels.
-// Returns a waiting group which signalizes when all endpoints are regenerated.
-func (d *Daemon) TriggerPolicyUpdates(force bool) *sync.WaitGroup {
+const (
+	policyTriggerDelay = 500 * time.Millisecond
+)
+
+// TriggerPolicyUpdates triggers policy updates for all local endpoint.
+// Multiple calls to TriggerPolicyUpdates() within policyTriggerDelay are
+// automatically folded together. This is called after policy changes, but also
+// after some changes in daemon configuration and endpoint labels.
+func (d *Daemon) TriggerPolicyUpdates(force bool) {
+	d.delayedPolicyTriggerMutex.Lock()
+
 	if force {
-		d.policy.BumpRevision() // force policy recalculation
-		log.Debugf("Forced policy recalculation triggered")
-	} else {
-		log.Debugf("Full policy recalculation triggered")
+		d.delayedPolicyTriggerForce = true
 	}
-	return endpointmanager.TriggerPolicyUpdates(d, force)
+
+	if !d.delayedPolicyTrigger {
+		d.delayedPolicyTrigger = true
+
+		go func() {
+			time.Sleep(policyTriggerDelay)
+
+			d.delayedPolicyTriggerMutex.Lock()
+			d.delayedPolicyTrigger = false
+			forced := d.delayedPolicyTriggerForce
+			d.delayedPolicyTriggerForce = false
+			d.delayedPolicyTriggerMutex.Unlock()
+
+			if forced {
+				d.policy.BumpRevision()
+			}
+
+			log.WithField("forced", forced).Debug("Policy recalculation for all endpoints triggered")
+			endpointmanager.TriggerPolicyUpdates(d, forced)
+		}()
+	}
+	d.delayedPolicyTriggerMutex.Unlock()
 }
 
 // UpdateEndpointPolicyEnforcement returns whether policy enforcement needs to be

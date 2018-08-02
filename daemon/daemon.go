@@ -141,6 +141,10 @@ type Daemon struct {
 	prefixLengths *counter.PrefixLengthCounter
 
 	clustermesh *clustermesh.ClusterMesh
+
+	delayedPolicyTriggerMutex lock.Mutex
+	delayedPolicyTrigger      bool
+	delayedPolicyTriggerForce bool
 }
 
 // UpdateProxyRedirect updates the redirect rules in the proxy for a particular
